@@ -1,142 +1,108 @@
 #include <gvk.hpp>
 #include <imgui.h>
+#include "cpu_to_gpu_data_types.hpp"
 
-class ray_tracing_triangle_meshes_app : public gvk::invokee
+// Set this compiler switch to 1 to enable hot reloading of
+// the ray tracing pipeline's shaders. Set to 0 to disable it.
+#define ENABLE_SHADER_HOT_RELOADING_FOR_RAY_TRACING_PIPELINE 1
+
+// Set this compiler switch to 1 to make the window resizable
+// and have the pipeline adapt to it. Set to 0 ti disable it.
+#define ENABLE_RESIZABLE_WINDOW 1
+
+// Main invokee of this application:
+class fluid_nightmare_main : public gvk::invokee
 {
-	struct push_const_data {
-		glm::mat4 mCameraTransform;
-		glm::vec4 mLightDir;
-	};
-
 public: // v== xk::invokee overrides which will be invoked by the framework ==v
-	ray_tracing_triangle_meshes_app(avk::queue& aQueue)
+	fluid_nightmare_main(avk::queue& aQueue)
 		: mQueue{ &aQueue }
 	{}
 
 	void initialize() override
 	{
-		mInitTime = std::chrono::high_resolution_clock::now();
-		mLightDir = { 0.8f, 1.0f, 0.0f };
-		auto* mainWnd = gvk::context().main_window();
-
-		// Create a descriptor cache that helps us to conveniently create descriptor sets:
+		// Create a descriptor cache that helps us to conveniently create descriptor sets,
+		// which describe where shaders can find resources like buffers or images:
 		mDescriptorCache = gvk::context().create_descriptor_cache();
 
+		// Set the direction towards the light:
+		mLightDir = { 0.8f, 1.0f, 0.0f };
+
+		// Get a pointer to the main window:		
+		auto* mainWnd = gvk::context().main_window();
+
 		// Load an ORCA scene from file:
-		auto orca = gvk::orca_scene_t::load_from_file("assets/sponza_duo.fscene");
-		// Get all the different materials from the whole scene:
-		auto distinctMaterialsOrca = orca->distinct_material_configs_for_all_models();
+		auto orca = gvk::orca_scene_t::load_from_file("assets/sponza_and_terrain.fscene", aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_CalcTangentSpace);
 
-		// The following loop gathers all the vertex and index data PER MATERIAL and constructs the buffers and materials.
-		std::vector<gvk::material_config> allMatConfigs;
-		for (const auto& pair : distinctMaterialsOrca) {
-			auto it = std::find(std::begin(allMatConfigs), std::end(allMatConfigs), pair.first);
-			allMatConfigs.push_back(pair.first); // pair.first = material config
-			auto matIndex = allMatConfigs.size() - 1;
+		// Prepare a vector to hold all the material information of all models:
+		std::vector<gvk::material_config> materialData;
+		
+		for (auto& model : orca->models()) {
+			auto& nameAndRangeInfo = mBlasNamesAndRanges.emplace_back(
+				model.mName,                                  // We are about to add several entries to mBlas for the model with this name
+				static_cast<int>(mGeometryInstances.size()),  // These ^ entries start at this index
+				-1                                            //  ... and we'll figure out the end index as we go.
+			);
 
-			// The data in distinctMaterialsOrca also references all the models and submesh-indices (at pair.second) which have a specific material (pair.first) 
-			for (const auto& indices : pair.second) { // pair.second = all models and meshes which use the material config (i.e. pair.first)
-				// However, we have to pay attention to the specific model's scene-properties,...
-				auto& modelData = orca->model_at_index(indices.mModelIndex);
-				// ... specifically, to its instances:
-				// (Generally, we can't combine the vertex data in this case with the vertex
-				//  data of other models if we have to draw multiple instances; because in 
-				//  the case of multiple instances, only the to-be-instanced geometry must
-				//  be accessible independently of the other geometry.
-				//  Therefore, in this example, we take the approach of building separate 
-				//  buffers for everything which could potentially be instanced.)
+			// Get the distinct materials for every (static) mesh and accumulate them in a big array
+			// wich will be transformed and stored in a big buffer, eventually:
+			auto distinctMaterials = model.mLoadedModel->distinct_material_configs();
+			for (const auto& [materialConfig, meshIndices] : distinctMaterials) {
+				materialData.push_back(materialConfig);
 
-				// Get a buffer containing all positions, and one containing all indices for all submeshes with this material
-				auto [positionsBuffer, indicesBuffer] = gvk::create_vertex_and_index_buffers(
-					{ gvk::make_models_and_meshes_selection(modelData.mLoadedModel, indices.mMeshIndices) },
-#if VK_HEADER_VERSION >= 162
-#else
-					vk::BufferUsageFlagBits::eRayTracingKHR |
-#endif
-					vk::BufferUsageFlagBits::eShaderDeviceAddressKHR,
-					avk::sync::with_barriers(mainWnd->command_buffer_lifetime_handler())
+				// Store all of this data in buffers and buffer views, s.t. we can access it later in ray tracing shaders
+				auto [posBfr, idxBfr] = gvk::create_vertex_and_index_buffers<avk::uniform_texel_buffer_meta>(
+					gvk::make_models_and_meshes_selection(model.mLoadedModel, meshIndices),  // Select several indices (those with the same material) from a model
+					vk::BufferUsageFlagBits::eShaderDeviceAddressKHR                         // Buffers need this additional flag to be made usable with ray tracing
 				);
+				auto nrmBfr = gvk::create_normals_buffer               <avk::uniform_texel_buffer_meta>(gvk::make_models_and_meshes_selection(model.mLoadedModel, meshIndices));
+				auto texBfr = gvk::create_2d_texture_coordinates_buffer<avk::uniform_texel_buffer_meta>(gvk::make_models_and_meshes_selection(model.mLoadedModel, meshIndices));
 
-				// Get a buffer containing all texture coordinates for all submeshes with this material
-				auto bufferViewIndex = static_cast<uint32_t>(mTexCoordBufferViews.size());
-				auto texCoordsData = gvk::get_2d_texture_coordinates({ gvk::make_models_and_meshes_selection(modelData.mLoadedModel, indices.mMeshIndices) }, 0);
-				auto texCoordsTexelBuffer = gvk::context().create_buffer(
-					avk::memory_usage::device,
-#if VK_HEADER_VERSION >= 162
-#else
-					vk::BufferUsageFlagBits::eRayTracingKHR |
-#endif
-					vk::BufferUsageFlagBits::eShaderDeviceAddressKHR,
-					avk::uniform_texel_buffer_meta::create_from_data(texCoordsData)
-					.describe_only_member(texCoordsData[0])
+				// Create a bottom level acceleration structure instance with this geometry.
+				auto blas = gvk::context().create_bottom_level_acceleration_structure(
+					{ avk::acceleration_structure_size_requirements::from_buffers(avk::vertex_index_buffer_pair{ posBfr, idxBfr }) },
+					false // no need to allow updates for static geometry
 				);
-				texCoordsTexelBuffer->fill(
-					texCoordsData.data(), 0,
-					avk::sync::with_barriers(mainWnd->command_buffer_lifetime_handler())
-				);
-				mTexCoordBufferViews.push_back(gvk::context().create_buffer_view(avk::owned(texCoordsTexelBuffer)));
-
-				// The following call is quite redundant => TODO: optimize!
-				auto [positionsData, indicesData] = gvk::get_vertices_and_indices({ gvk::make_models_and_meshes_selection(modelData.mLoadedModel, indices.mMeshIndices) });
-				auto indexTexelBuffer = gvk::context().create_buffer(
-					avk::memory_usage::device,
-#if VK_HEADER_VERSION >= 162
-#else
-					vk::BufferUsageFlagBits::eRayTracingKHR |
-#endif
-					vk::BufferUsageFlagBits::eShaderDeviceAddressKHR,
-					avk::uniform_texel_buffer_meta::create_from_data(indicesData)
-					.set_format<glm::uvec3>() // Combine 3 consecutive elements to one unit
-				);
-				indexTexelBuffer->fill(
-					indicesData.data(), 0,
-					avk::sync::with_barriers(gvk::context().main_window()->command_buffer_lifetime_handler())
-				);
-				mIndexBufferViews.push_back(gvk::context().create_buffer_view(avk::owned(indexTexelBuffer)));
-
-				// Create one bottom level acceleration structure per model
-				auto blas = gvk::context().create_bottom_level_acceleration_structure({
-					avk::acceleration_structure_size_requirements::from_buffers(avk::vertex_index_buffer_pair{ positionsBuffer, indicesBuffer })
-					}, true);
-				// Enable shared ownership because we'll have one TLAS per frame in flight, each one referencing the SAME BLASs
-				// (But that also means that we may not modify the BLASs. They must stay the same, otherwise concurrent access will fail.)
-				blas.enable_shared_ownership();
-				mBLASs.push_back(blas); // No need to move, because a BLAS is now represented by a shared pointer internally. We could, though.
-
-				assert(modelData.mInstances.size() > 0); // Handle the instances. There must at least be one!
-				for (size_t i = 0; i < modelData.mInstances.size(); ++i) {
+				blas->build({ avk::vertex_index_buffer_pair{ posBfr, idxBfr } });
+				
+				// Create a geometry instance entry per instance in the ORCA scene file:
+				for (const auto& inst : model.mInstances) {
+					auto bufferViewIndex = static_cast<uint32_t>(mTexCoordsBufferViews.size());
+					
 					mGeometryInstances.push_back(
-						gvk::context().create_geometry_instance(blas)
-						.set_transform_column_major(gvk::to_array(gvk::matrix_from_transforms(modelData.mInstances[i].mTranslation, glm::quat(modelData.mInstances[i].mRotation), modelData.mInstances[i].mScaling)))
-						.set_custom_index(bufferViewIndex)
-					);
+						gvk::context().create_geometry_instance(blas) // Refer to the concrete BLAS
+							// Set this instance's transformation matrix:
+							.set_transform_column_major(gvk::to_array(gvk::matrix_from_transforms(inst.mTranslation, glm::quat(inst.mRotation), inst.mScaling)))
+							// Set this instance's custom index, which is especially important since we'll use it in shaders
+							// to refer to the right material and also vertex data (these two are aligned index-wise):
+							.set_custom_index(bufferViewIndex)
+					);					
 				}
+				
+				mBlas.push_back(std::move(blas)); // Move this BLAS s.t. we don't have to enable_shared_ownership. We're done with it here.
 
-				// Build BLAS and do not sync at all at this point (passing two empty handlers as parameters):
-				//   The idea of this is that multiple BLAS can be built
-				//   in parallel, we only have to make sure to synchronize
-				//   before we start building the TLAS.
-				positionsBuffer.enable_shared_ownership();
-				indicesBuffer.enable_shared_ownership();
-				mBLASs.back()->build({ avk::vertex_index_buffer_pair{ positionsBuffer, indicesBuffer } }, {},
-					avk::sync::with_barriers(
-						[posBfr = positionsBuffer, idxBfr = indicesBuffer](avk::command_buffer cb) {
-							cb->set_custom_deleter([lPosBfr = std::move(posBfr), lIdxBfr = std::move(idxBfr)](){});
-							gvk::context().main_window()->handle_lifetime(avk::owned(cb));
-						}, {}, {})
-				);
+				// After we have used positions and indices for building the BLAS, still need to create buffer views which allow us to access
+				// the per vertex data in ray tracing shaders, where they will be accessible via samplerBuffer- or usamplerBuffer-type uniforms.
+				mPositionsBufferViews.push_back(gvk::context().create_buffer_view(avk::owned(posBfr))); // owned is equivalent to move
+				mIndexBufferViews    .push_back(gvk::context().create_buffer_view(avk::owned(idxBfr)));
+				mNormalsBufferViews  .push_back(gvk::context().create_buffer_view(avk::owned(nrmBfr)));
+				mTexCoordsBufferViews.push_back(gvk::context().create_buffer_view(avk::owned(texBfr)));
 			}
+
+			// Set the final range-to index (one after the end, i.e. excluding the last index):
+			std::get<2>(nameAndRangeInfo) = static_cast<int>(mGeometryInstances.size());
 		}
 
-		// Convert the materials that were gathered above into a GPU-compatible format, and upload into a GPU storage buffer:
+		// Convert the materials that were gathered above into a GPU-compatible format and generate and upload images to the GPU:
 		auto [gpuMaterials, imageSamplers] = gvk::convert_for_gpu_usage(
-			allMatConfigs, false, true,
+			materialData, true /* assume textures in sRGB */, true /* flip textures */,
 			avk::image_usage::general_texture,
-			avk::filter_mode::trilinear,
-			avk::border_handling_mode::repeat,
-			avk::sync::with_barriers(gvk::context().main_window()->command_buffer_lifetime_handler())
-		);
+			avk::filter_mode::trilinear, // No need for MIP-mapping (which would be activated with trilinear or anisotropic) since we're using ray tracing
+			avk::border_handling_mode::repeat);
 
+		// Store images in a member variable, otherwise they would get destroyed.
+		mImageSamplers = std::move(imageSamplers);
+		
+		// Upload materials in GPU-compatible format into a GPU storage buffer:
 		mMaterialBuffer = gvk::context().create_buffer(
 			avk::memory_usage::host_visible, {},
 			avk::storage_buffer_meta::create_from_data(gpuMaterials)
@@ -146,88 +112,72 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 			avk::sync::with_barriers(gvk::context().main_window()->command_buffer_lifetime_handler())
 		);
 
-		mImageSamplers = std::move(imageSamplers);
-
-		auto fif = mainWnd->number_of_frames_in_flight();
-		for (decltype(fif) i = 0; i < fif; ++i) {
-			// Each TLAS owns every BLAS (this will only work, if the BLASs themselves stay constant, i.e. read access
-			auto tlas = gvk::context().create_top_level_acceleration_structure(mGeometryInstances.size(), true);
-			// Build the TLAS, ...
-			tlas->build(mGeometryInstances, {}, avk::sync::with_barriers(
-				gvk::context().main_window()->command_buffer_lifetime_handler(),
-				// Sync before building the TLAS:
-				[](avk::command_buffer_t& commandBuffer, avk::pipeline_stage destinationStage, std::optional<avk::read_memory_access> readAccess) {
-					assert(avk::pipeline_stage::acceleration_structure_build == destinationStage);
-					assert(!readAccess.has_value() || avk::memory_access::acceleration_structure_read_access == readAccess.value().value());
-					// Wait on all the BLAS builds that happened before (and their memory):
-					commandBuffer.establish_global_memory_barrier_rw(
-						avk::pipeline_stage::acceleration_structure_build, destinationStage,
-						avk::memory_access::acceleration_structure_write_access, readAccess
-					);
-				},
-				// Whatever comes after must wait for this TLAS build to finish (and its memory to be made available):
-				//   However, that's exactly what the default_handler_after_operation
-				//   does, so let's just use that (it is also the default value for
-				//   this handler)
-					avk::sync::presets::default_handler_after_operation
-					)
-			);
-			mTLAS.push_back(std::move(tlas));
-		}
-
-		// Create offscreen image views to ray-trace into, one for each frame in flight:
+		// Build the top-level acceleration structure
+		mTlas = gvk::context().create_top_level_acceleration_structure(
+			mGeometryInstances.size(),   // Specify how many geometry instances there are expected to be
+			true                         // Allow updates since we want to have the opportunity to enable/disable some of them via the UI
+		);
+		mTlas->build(mGeometryInstances);
+		
+		// Create an offscreen image to ray-trace into. It is accessed via an image view:
 		const auto wdth = gvk::context().main_window()->resolution().x;
 		const auto hght = gvk::context().main_window()->resolution().y;
 		const auto frmt = gvk::format_from_window_color_buffer(mainWnd);
-
-		for (decltype(fif) i = 0; i < fif; ++i) {
-			auto offscreenImage = gvk::context().create_image(wdth, hght, frmt, 1, avk::memory_usage::device, avk::image_usage::general_storage_image);
-			offscreenImage->transition_to_layout({}, avk::sync::with_barriers(gvk::context().main_window()->command_buffer_lifetime_handler()));
-			mOffscreenImageViews.emplace_back(gvk::context().create_image_view(avk::owned(offscreenImage)));
-			assert((mOffscreenImageViews.back()->config().subresourceRange.aspectMask & vk::ImageAspectFlagBits::eColor) == vk::ImageAspectFlagBits::eColor);
-		}
+		auto offscreenImage = gvk::context().create_image(wdth, hght, frmt, 1, avk::memory_usage::device, avk::image_usage::general_storage_image);
+		offscreenImage->transition_to_layout();
+		mOffscreenImageView = gvk::context().create_image_view(avk::owned(offscreenImage));
 
 		// Create our ray tracing pipeline with the required configuration:
 		mPipeline = gvk::context().create_ray_tracing_pipeline_for(
+			// Specify all the shaders which participate in rendering in a shader binding table (the order matters):
 			avk::define_shader_table(
-				avk::ray_generation_shader("shaders/rt_09_first.rgen"),
-				avk::triangles_hit_group::create_with_rchit_only("shaders/rt_09_first.rchit"),
-				avk::triangles_hit_group::create_with_rchit_only("shaders/rt_09_secondary.rchit"),
-				avk::miss_shader("shaders/rt_09_first.rmiss.spv"),
-				avk::miss_shader("shaders/rt_09_secondary.rmiss.spv")
+				avk::ray_generation_shader("shaders/ray_gen_shader.rgen"),
+				avk::triangles_hit_group::create_with_rchit_only("shaders/closest_hit_shader.rchit"),
+				avk::miss_shader("shaders/miss_shader.rmiss")
 			),
+			// We won't need the maximum recursion depth, but why not:
 			gvk::context().get_max_ray_tracing_recursion_depth(),
 			// Define push constants and descriptor bindings:
 			avk::push_constant_binding_data{ avk::shader_type::ray_generation | avk::shader_type::closest_hit, 0, sizeof(push_const_data) },
 			avk::descriptor_binding(0, 0, mImageSamplers),
 			avk::descriptor_binding(0, 1, mMaterialBuffer),
-			avk::descriptor_binding(0, 2, mIndexBufferViews),
-			avk::descriptor_binding(0, 3, mTexCoordBufferViews),
-			avk::descriptor_binding(1, 0, mOffscreenImageViews[0]->as_storage_image()), // Just take any, this is just to define the layout; could also state it like follows: xk::binding<xk::image_view>(1, 0)
-			avk::descriptor_binding(2, 0, mTLAS[0])				 // Just take any, this is just to define the layout; could also state it like follows: xk::binding<xk::top_level_acceleration_structure>(2, 0)
+			avk::descriptor_binding(0, 2, avk::as_uniform_texel_buffer_views(mIndexBufferViews)),
+			avk::descriptor_binding(0, 3, avk::as_uniform_texel_buffer_views(mTexCoordsBufferViews)),
+			avk::descriptor_binding(0, 4, avk::as_uniform_texel_buffer_views(mNormalsBufferViews)),
+			avk::descriptor_binding(1, 0, mOffscreenImageView->as_storage_image()), // Bind the offscreen image to render into as storage image
+			avk::descriptor_binding(2, 0, mTlas)                                    // Bind the TLAS, s.t. we can trace rays against it
 		);
 
+		// Print the structure of our shader binding table, also displaying the offsets:
 		mPipeline->print_shader_binding_table_groups();
 
-		mPipeline.enable_shared_ownership(); // Make it usable with the updater
+#if ENABLE_SHADER_HOT_RELOADING_FOR_RAY_TRACING_PIPELINE || ENABLE_RESIZABLE_WINDOW
+		// Create an updater:
 		mUpdater.emplace();
+		mPipeline.enable_shared_ownership(); // The updater needs to hold a reference to it, so we need to enable shared ownership.
 
-		// As we are updating our image views if swap chain is resized, it is advised to also cleanup our descriptor cache
-		for (auto& oiv : mOffscreenImageViews) {
-			oiv.enable_shared_ownership();
-			mUpdater->on(gvk::swapchain_resized_event(gvk::context().main_window())).update(oiv);
-		}
-		mUpdater->on(gvk::destroying_image_view_event()).invoke([this](const avk::image_view& aImageViewToBeDestroyed) {
-			auto numRemoved = mDescriptorCache.remove_sets_with_handle(aImageViewToBeDestroyed->handle());
-			});
-		mUpdater->on(gvk::swapchain_resized_event(gvk::context().main_window()), gvk::shader_files_changed_event(mPipeline)).update(mPipeline);
-
+#if ENABLE_SHADER_HOT_RELOADING_FOR_RAY_TRACING_PIPELINE
+		mUpdater->on(gvk::shader_files_changed_event(mPipeline))
+		            .update(mPipeline);
+#endif
+		
+#if ENABLE_RESIZABLE_WINDOW
+		mOffscreenImageView.enable_shared_ownership(); // The updater needs to hold a reference to it, so we need to enable shared ownership.
+		mUpdater->on(gvk::swapchain_resized_event(gvk::context().main_window()))
+			        .update(mOffscreenImageView, mPipeline)
+			     .then_on(gvk::destroying_image_view_event()) // Make sure that our descriptor cache stays cleaned up:
+			        .invoke([this](const avk::image_view& aImageViewToBeDestroyed) {
+						auto numRemoved = mDescriptorCache.remove_sets_with_handle(aImageViewToBeDestroyed->handle());
+				    });
+#endif
+#endif
+		
 		// Add the camera to the composition (and let it handle the updates)
 		mQuakeCam.set_translation({ 0.0f, 0.0f, 0.0f });
 		mQuakeCam.set_perspective_projection(glm::radians(60.0f), gvk::context().main_window()->aspect_ratio(), 0.5f, 100.0f);
-		//mQuakeCam.set_orthographic_projection(-5, 5, -5, 5, 0.5, 100);
 		gvk::current_composition()->add_element(mQuakeCam);
 
+		// Add an "ImGui Manager" which handles the UI:
 		auto imguiManager = gvk::current_composition()->element_by_type<gvk::imgui_manager>();
 		if (nullptr != imguiManager) {
 			imguiManager->add_callback([this]() {
@@ -239,6 +189,10 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 				ImGui::TextColored(ImVec4(0.f, .6f, .8f, 1.f), " (UI vs. scene navigation)");
 				ImGui::DragFloat3("Light Direction", glm::value_ptr(mLightDir), 0.005f, -1.0f, 1.0f);
 				mLightDir = glm::normalize(mLightDir);
+
+				ImGui::Separator();
+				ImGui::DragFloat("Full Field of View", &mFieldOfViewForRayTracing, 1, 10.0f, 160.0f);
+				
 				ImGui::End();
 				});
 		}
@@ -246,16 +200,6 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 
 	void update() override
 	{
-		static int counter = 0;
-		if (++counter == 4) {
-			auto current = std::chrono::high_resolution_clock::now();
-			auto time_span = current - mInitTime;
-			auto int_min = std::chrono::duration_cast<std::chrono::minutes>(time_span).count();
-			auto int_sec = std::chrono::duration_cast<std::chrono::seconds>(time_span).count();
-			auto fp_ms = std::chrono::duration<double, std::milli>(time_span).count();
-			printf("Time from init to fourth frame: %d min, %lld sec %lf ms\n", int_min, int_sec - static_cast<decltype(int_sec)>(int_min) * 60, fp_ms - 1000.0 * int_sec);
-		}
-
 		// Arrow Keys || Page Up/Down Keys => Move the TLAS
 		static int64_t updateUntilFrame = -1;
 		if (gvk::input().key_down(gvk::key_code::left) || gvk::input().key_down(gvk::key_code::right) || gvk::input().key_down(gvk::key_code::page_down) || gvk::input().key_down(gvk::key_code::page_up) || gvk::input().key_down(gvk::key_code::up) || gvk::input().key_down(gvk::key_code::down)) {
@@ -264,39 +208,39 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 		}
 		if (gvk::context().main_window()->current_frame() <= updateUntilFrame)
 		{
-			auto inFlightIndex = gvk::context().main_window()->in_flight_index_for_frame();
+			//auto inFlightIndex = gvk::context().main_window()->in_flight_index_for_frame();
 
-			auto x = (gvk::input().key_down(gvk::key_code::left) ? -gvk::time().delta_time() : 0.0f)
-				+ (gvk::input().key_down(gvk::key_code::right) ? gvk::time().delta_time() : 0.0f);
-			auto y = (gvk::input().key_down(gvk::key_code::page_down) ? -gvk::time().delta_time() : 0.0f)
-				+ (gvk::input().key_down(gvk::key_code::page_up) ? gvk::time().delta_time() : 0.0f);
-			auto z = (gvk::input().key_down(gvk::key_code::up) ? -gvk::time().delta_time() : 0.0f)
-				+ (gvk::input().key_down(gvk::key_code::down) ? gvk::time().delta_time() : 0.0f);
-			auto speed = 1000.0f;
+			//auto x = (gvk::input().key_down(gvk::key_code::left) ? -gvk::time().delta_time() : 0.0f)
+			//	+ (gvk::input().key_down(gvk::key_code::right) ? gvk::time().delta_time() : 0.0f);
+			//auto y = (gvk::input().key_down(gvk::key_code::page_down) ? -gvk::time().delta_time() : 0.0f)
+			//	+ (gvk::input().key_down(gvk::key_code::page_up) ? gvk::time().delta_time() : 0.0f);
+			//auto z = (gvk::input().key_down(gvk::key_code::up) ? -gvk::time().delta_time() : 0.0f)
+			//	+ (gvk::input().key_down(gvk::key_code::down) ? gvk::time().delta_time() : 0.0f);
+			//auto speed = 1000.0f;
 
-			// Change the position of one of the current TLASs BLAS, and update-build the TLAS.
-			// The changes do not affect the BLAS, only the instance-data that the TLAS stores to each one of the BLAS.
-			//
-			// 1. Change every other instance:
-			bool evenOdd = true;
-			for (auto& geomInst : mGeometryInstances) {
-				evenOdd = !evenOdd;
-				if (evenOdd) { continue; }
-				geomInst.set_transform_column_major(gvk::to_array(glm::translate(gvk::to_mat(geomInst.mTransform), glm::vec3{ x, y, z } *speed)));
-			}
-			//
-			// 2. Update the TLAS for the current inFlightIndex, copying the changed BLAS-data into an internal buffer:
-			mTLAS[inFlightIndex]->update(mGeometryInstances, {}, avk::sync::with_barriers(
-				gvk::context().main_window()->command_buffer_lifetime_handler(),
-				{}, // Nothing to wait for
-				[](avk::command_buffer_t& commandBuffer, avk::pipeline_stage srcStage, std::optional<avk::write_memory_access> srcAccess) {
-					// We want this update to be as efficient/as tight as possible
-					commandBuffer.establish_global_memory_barrier_rw(
-						srcStage, avk::pipeline_stage::ray_tracing_shaders, // => ray tracing shaders must wait on the building of the acceleration structure
-						srcAccess, avk::memory_access::acceleration_structure_read_access // TLAS-update's memory must be made visible to ray tracing shader's caches (so they can read from)
-					);
-				}
-			));
+			//// Change the position of one of the current TLASs BLAS, and update-build the TLAS.
+			//// The changes do not affect the BLAS, only the instance-data that the TLAS stores to each one of the BLAS.
+			////
+			//// 1. Change every other instance:
+			//bool evenOdd = true;
+			//for (auto& geomInst : mGeometryInstances) {
+			//	evenOdd = !evenOdd;
+			//	if (evenOdd) { continue; }
+			//	geomInst.set_transform_column_major(gvk::to_array(glm::translate(gvk::to_mat(geomInst.mTransform), glm::vec3{ x, y, z } *speed)));
+			//}
+			////
+			//// 2. Update the TLAS for the current inFlightIndex, copying the changed BLAS-data into an internal buffer:
+			//mTLAS[inFlightIndex]->update(mGeometryInstances, {}, avk::sync::with_barriers(
+			//	gvk::context().main_window()->command_buffer_lifetime_handler(),
+			//	{}, // Nothing to wait for
+			//	[](avk::command_buffer_t& commandBuffer, avk::pipeline_stage srcStage, std::optional<avk::write_memory_access> srcAccess) {
+			//		// We want this update to be as efficient/as tight as possible
+			//		commandBuffer.establish_global_memory_barrier_rw(
+			//			srcStage, avk::pipeline_stage::ray_tracing_shaders, // => ray tracing shaders must wait on the building of the acceleration structure
+			//			srcAccess, avk::memory_access::acceleration_structure_read_access // TLAS-update's memory must be made visible to ray tracing shader's caches (so they can read from)
+			//		);
+			//	}
+			//));
 		}
 
 		if (gvk::input().key_pressed(gvk::key_code::space)) {
@@ -333,15 +277,17 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 		cmdbfr->bind_descriptors(mPipeline->layout(), mDescriptorCache.get_or_create_descriptor_sets({
 			avk::descriptor_binding(0, 0, mImageSamplers),
 			avk::descriptor_binding(0, 1, mMaterialBuffer),
-			avk::descriptor_binding(0, 2, mIndexBufferViews),
-			avk::descriptor_binding(0, 3, mTexCoordBufferViews),
-			avk::descriptor_binding(1, 0, mOffscreenImageViews[inFlightIndex]->as_storage_image()),
-			avk::descriptor_binding(2, 0, mTLAS[inFlightIndex])
+			avk::descriptor_binding(0, 2, avk::as_uniform_texel_buffer_views(mIndexBufferViews)),
+			avk::descriptor_binding(0, 3, avk::as_uniform_texel_buffer_views(mTexCoordsBufferViews)),
+			avk::descriptor_binding(0, 4, avk::as_uniform_texel_buffer_views(mNormalsBufferViews)),
+			avk::descriptor_binding(1, 0, mOffscreenImageView->as_storage_image()),
+			avk::descriptor_binding(2, 0, mTlas)
 			}));
 
 		// Set the push constants:
 		auto pushConstantsForThisDrawCall = push_const_data{
 			mQuakeCam.global_transformation_matrix(),
+			glm::radians(mFieldOfViewForRayTracing) * 0.5f, 0.f, 0.f, 0.f,
 			glm::vec4{mLightDir, 0.0f}
 		};
 		cmdbfr->handle().pushConstants(mPipeline->layout_handle(), vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR, 0, sizeof(pushConstantsForThisDrawCall), &pushConstantsForThisDrawCall);
@@ -362,7 +308,7 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 		);
 
 		avk::copy_image_to_another(
-			mOffscreenImageViews[inFlightIndex]->get_image(),
+			mOffscreenImageView->get_image(),
 			mainWnd->current_backbuffer()->image_at(0),
 			avk::sync::with_barriers_into_existing_command_buffer(*cmdbfr, {}, {})
 		);
@@ -385,95 +331,130 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 	}
 
 private: // v== Member variables ==v
-	std::chrono::high_resolution_clock::time_point mInitTime;
 
+	// --------------- Some fundamental stuff -----------------
+	
+	// Our only queue where we submit command buffers to:
 	avk::queue* mQueue;
+	
+	// Our only descriptor cache which stores reusable descriptor sets:
 	avk::descriptor_cache mDescriptorCache;
 
-	// Multiple BLAS, concurrently used by all the (three?) TLASs:
-	std::vector<avk::bottom_level_acceleration_structure> mBLASs;
-	// Geometry instance data which store the instance data per BLAS
-	std::vector<avk::geometry_instance> mGeometryInstances;
-	// Multiple TLAS, one for each frame in flight:
-	std::vector<avk::top_level_acceleration_structure> mTLAS;
-
-	std::vector<avk::image_view> mOffscreenImageViews;
-
-	avk::buffer mMaterialBuffer;
-	std::vector<avk::image_sampler> mImageSamplers;
-	std::vector<avk::buffer_view> mIndexBufferViews;
-	std::vector<avk::buffer_view> mTexCoordBufferViews;
-
+	// ------------- Scene and model properties ---------------
+	
+	// The direction of our single light source, which is a directional light:
 	glm::vec3 mLightDir = { 0.0f, -1.0f, 0.0f };
 
-	avk::ray_tracing_pipeline mPipeline;
-	avk::graphics_pipeline mGraphicsPipeline;
-	gvk::quake_camera mQuakeCam;
+	// A buffer that stores all material data of the loaded models:
+	avk::buffer mMaterialBuffer;
 
-}; // ray_tracing_triangle_meshes_app
+	// Several images(+samplers) which store the material data's images:
+	std::vector<avk::image_sampler> mImageSamplers;
+
+	// Buffer views which provide the indexed geometry's index data:
+	std::vector<avk::buffer_view> mIndexBufferViews;
+
+	// Buffer views which provide the indexed geometry's positions data:
+	std::vector<avk::buffer_view> mPositionsBufferViews;
+
+	// Buffer views which provide the indexed geometry's texture coordinates data:
+	std::vector<avk::buffer_view> mTexCoordsBufferViews;
+
+	// Buffer views which provide the indexed geometry's normals data:
+	std::vector<avk::buffer_view> mNormalsBufferViews;
+
+	// ----------- Resources required for ray tracing -----------
+
+	// A vector which stores a model name and a range of indices, refering to the mBlas vector.
+	// The indices referred to by the [std:get<1>, std::get<2>) range are the associated submeshes.
+	std::vector<std::tuple<std::string, int, int>> mBlasNamesAndRanges;
+
+	// A vector of multiple bottom-level acceleration structures (BLAS) which store geometry:
+	std::vector<avk::bottom_level_acceleration_structure> mBlas;
+
+	// Geometry instance data which store the instance data per BLAS inststance:
+	//    In our specific setup, this will be perfectly aligned with:
+	//     - mIndexBufferViews
+	//     - mTexCoordBufferViews
+	//     - mNormalsBufferViews
+	std::vector<avk::geometry_instance> mGeometryInstances;
+	
+	// We are using one single top-level acceleration structure (TLAS) to keep things simple:
+	//    (We're not duplicating the TLAS per frame in flight. Instead, we
+	//     are using barriers to ensure correct rendering after some data 
+	//     has changed in one or multiple of the acceleration structures.)
+	avk::top_level_acceleration_structure mTlas;
+
+	// We are rendering into one single target offscreen image (Otherwise we would need multiple
+	// TLAS instances, too.) to keep things simple:
+	avk::image_view mOffscreenImageView;
+	// (After blitting this image into one of the window's backbuffers, the GPU can 
+	//  possibly achieve some parallelization of work during presentation.)
+
+	// Thre ray tracing pipeline that renders everything into the mOffscreenImageView:
+	avk::ray_tracing_pipeline mPipeline;
+
+	// ----------------- Further invokees --------------------
+
+	// A camera to navigate our scene, which provides us with the view matrix:
+	gvk::quake_camera mQuakeCam;
+	float mFieldOfViewForRayTracing = 45.0f;
+	
+}; // End of fluid_nightmare_main
 
 int main() // <== Starting point ==
 {
 	try {
-		// Create a window and open it
-		auto mainWnd = gvk::context().create_window("Real-Time Ray Tracing - Triangle Meshes Example");
+		// Create a window and open it:
+		auto mainWnd = gvk::context().create_window("Fluid Nightmare - Main Window");
 		mainWnd->set_resolution({ 1920, 1080 });
 		mainWnd->enable_resizing(true);
 		mainWnd->set_presentaton_mode(gvk::presentation_mode::mailbox);
 		mainWnd->set_number_of_concurrent_frames(3u);
 		mainWnd->open();
 
+		// Create one single queue to submit command buffers to:
 		auto& singleQueue = gvk::context().create_queue({}, avk::queue_selection_preference::versatile_queue, mainWnd);
 		mainWnd->add_queue_family_ownership(singleQueue);
 		mainWnd->set_present_queue(singleQueue);
-
-		// Create an instance of our main avk::element which contains all the functionality:
-		auto app = ray_tracing_triangle_meshes_app(singleQueue);
+		// ... pass the queue to the constructors of the invokees:
+		
+		// Create an instance of our main avk::invokee which will perform the initial setup and spawn further invokees:
+		auto app = fluid_nightmare_main(singleQueue);
 		// Create another element for drawing the UI with ImGui
 		auto ui = gvk::imgui_manager(singleQueue);
 
-		// GO:
+		// Launch the render loop in 5.. 4.. 3.. 2.. 1.. 
 		gvk::start(
-			gvk::application_name("Gears-Vk + Auto-Vk Example: Real-Time Ray Tracing - Triangle Meshes Example"),
-#if VK_HEADER_VERSION >= 162
+			gvk::application_name("Fluid Nightmare"),
 			gvk::required_device_extensions()
-			.add_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)
-			.add_extension(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME)
-			.add_extension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME)
-			.add_extension(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)
-			.add_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)
-			.add_extension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME),
+				// We need several extensions for ray tracing:
+				.add_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)
+				.add_extension(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME)
+				.add_extension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME)
+				.add_extension(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)
+				.add_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)
+				.add_extension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME),
 			[](vk::PhysicalDeviceVulkan12Features& aVulkan12Featues) {
+				// Also this Vulkan 1.2 feature is required for ray tracing:
 				aVulkan12Featues.setBufferDeviceAddress(VK_TRUE);
 			},
 			[](vk::PhysicalDeviceRayTracingPipelineFeaturesKHR& aRayTracingFeatures) {
+				// Enabling the extensions is not enough, we need to activate ray tracing features explicitly here:
 				aRayTracingFeatures.setRayTracingPipeline(VK_TRUE);
 			},
-				[](vk::PhysicalDeviceAccelerationStructureFeaturesKHR& aAccelerationStructureFeatures) {
+			[](vk::PhysicalDeviceAccelerationStructureFeaturesKHR& aAccelerationStructureFeatures) {
+				// ...and here:
 				aAccelerationStructureFeatures.setAccelerationStructure(VK_TRUE);
 			},
-#else 
-			gvk::required_device_extensions()
-			.add_extension(VK_KHR_RAY_TRACING_EXTENSION_NAME)
-			.add_extension(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME)
-			.add_extension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME)
-			.add_extension(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)
-			.add_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)
-			.add_extension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME),
-			[](vk::PhysicalDeviceVulkan12Features& aVulkan12Featues) {
-				aVulkan12Featues.setBufferDeviceAddress(VK_TRUE);
-			},
-			[](vk::PhysicalDeviceRayTracingFeaturesKHR& aRayTracingFeatures) {
-				aRayTracingFeatures.setRayTracing(VK_TRUE);
-			},
-#endif
-				mainWnd,
-				app,
-				ui
-				);
+			// Pass our main window to render into its frame buffers:
+			mainWnd,
+			// Pass the invokees that shall be invoked every frame:
+			app, ui
+			);
 	}
-	catch (gvk::logic_error&) {}
-	catch (gvk::runtime_error&) {}
-	catch (avk::logic_error&) {}
-	catch (avk::runtime_error&) {}
+	catch (gvk::logic_error& e)    { LOG_ERROR(std::string("Caught gvk::logic_error in main(): ")   + e.what()); }
+	catch (gvk::runtime_error& e)  { LOG_ERROR(std::string("Caught gvk::runtime_error in main(): ") + e.what()); }
+	catch (avk::logic_error& e)    { LOG_ERROR(std::string("Caught avk::logic_error in main(): ")   + e.what()); }
+	catch (avk::runtime_error& e)  { LOG_ERROR(std::string("Caught avk::runtime_error in main(): ") + e.what()); }
 }

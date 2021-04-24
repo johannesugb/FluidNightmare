@@ -8,31 +8,44 @@
     <Filter Include="shaders">
       <UniqueIdentifier>{1d345cf5-0451-42e0-83a8-6a3f5a7203ca}</UniqueIdentifier>
     </Filter>
-    <Filter Include="precompiled_headers">
-      <UniqueIdentifier>{a498e4bc-580a-49d7-9a8e-ec57803fdcd4}</UniqueIdentifier>
+    <Filter Include="source">
+      <UniqueIdentifier>{372ae679-fee5-41fe-8bc8-124f74f35458}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="source\precompiled_headers">
+      <UniqueIdentifier>{66b81881-a421-46fa-80d5-9a887ec696a7}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <None Include="shaders\rt_09_first.rchit">
-      <Filter>shaders</Filter>
-    </None>
-    <None Include="shaders\rt_09_first.rgen">
-      <Filter>shaders</Filter>
-    </None>
-    <None Include="shaders\rt_09_first.rmiss">
-      <Filter>shaders</Filter>
-    </None>
-    <None Include="shaders\rt_09_secondary.rchit">
-      <Filter>shaders</Filter>
-    </None>
-    <None Include="shaders\rt_09_secondary.rmiss">
-      <Filter>shaders</Filter>
-    </None>
-    <None Include="gears_vk\assets\sponza_duo.fscene">
+    <None Include="gears_vk\assets\sponza_and_terrain.fscene">
       <Filter>assets</Filter>
+    </None>
+    <None Include="shaders\closest_hit_shader.rchit">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shaders\ray_gen_shader.rgen">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shaders\miss_shader.rmiss">
+      <Filter>shaders</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="source\main.cpp" />
+    <ClCompile Include="source\main.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
+    <ClCompile Include="source\precompiled_headers\cg_stdafx.cpp">
+      <Filter>source\precompiled_headers</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="source\cpu_to_gpu_data_types.hpp">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\precompiled_headers\cg_stdafx.hpp">
+      <Filter>source\precompiled_headers</Filter>
+    </ClInclude>
+    <ClInclude Include="source\precompiled_headers\cg_targetver.hpp">
+      <Filter>source\precompiled_headers</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
