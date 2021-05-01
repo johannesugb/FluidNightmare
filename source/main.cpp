@@ -29,7 +29,7 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 
 		// Get a pointer to the main window:		
 		auto* mainWnd = gvk::context().main_window();
-
+		
 		// Load an ORCA scene from file:
 		auto orca = gvk::orca_scene_t::load_from_file("assets/sponza_and_terrain.fscene", aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_CalcTangentSpace);
 
@@ -93,11 +93,11 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 		}
 
 		// Convert the materials that were gathered above into a GPU-compatible format and generate and upload images to the GPU:
-		auto [gpuMaterials, imageSamplers] = gvk::convert_for_gpu_usage(
+		auto [gpuMaterials, imageSamplers] = gvk::convert_for_gpu_usage<gvk::material_gpu_data>(
 			materialData, true /* assume textures in sRGB */, true /* flip textures */,
 			avk::image_usage::general_texture,
-			avk::filter_mode::trilinear, // No need for MIP-mapping (which would be activated with trilinear or anisotropic) since we're using ray tracing
-			avk::border_handling_mode::repeat);
+			avk::filter_mode::trilinear // No need for MIP-mapping (which would be activated with trilinear or anisotropic) since we're using ray tracing
+		);
 
 		// Store images in a member variable, otherwise they would get destroyed.
 		mImageSamplers = std::move(imageSamplers);
@@ -173,7 +173,7 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 #endif
 		
 		// Add the camera to the composition (and let it handle the updates)
-		mQuakeCam.set_translation({ 0.0f, 0.0f, 0.0f });
+		mQuakeCam.set_translation({ 0.0f, 10.0f, 45.0f });
 		mQuakeCam.set_perspective_projection(glm::radians(60.0f), gvk::context().main_window()->aspect_ratio(), 0.5f, 100.0f);
 		gvk::current_composition()->add_element(mQuakeCam);
 
@@ -191,10 +191,29 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 				mLightDir = glm::normalize(mLightDir);
 
 				ImGui::Separator();
-				ImGui::DragFloat("Full Field of View", &mFieldOfViewForRayTracing, 1, 10.0f, 160.0f);
-				
+				// Let the user change the field of view, and evaluate in the ray generation shader:
+				ImGui::DragFloat("Field of View", &mFieldOfViewForRayTracing, 1, 10.0f, 160.0f);
+
+				ImGui::Separator();
+				// Let the user change shadow parameters:
+				ImGui::Checkbox("Enable Shadows", &mEnableShadows);
+				if (mEnableShadows) {
+					ImGui::SliderFloat("Shadows Intensity", &mShadowsFactor, 0.0f, 1.0f);
+					ImGui::ColorEdit3("Shadows Color", glm::value_ptr(mShadowsColor));
+				}
+
+				ImGui::Separator();
+				// Let the user change ambient occlusion parameters:
+				ImGui::Checkbox("Enable Ambient Occlusion", &mEnableAmbientOcclusion);
+				if (mEnableAmbientOcclusion) {
+					ImGui::DragFloat("AO Rays Min. Length", &mAmbientOcclusionMinDist, 0.001f, 0.000001f, 1.0f);
+					ImGui::DragFloat("AO Rays Max. Length", &mAmbientOcclusionMaxDist, 0.01f,  0.001f,    1000.0f);
+					ImGui::SliderFloat("AO Intensity", &mAmbientOcclusionFactor, 0.0f, 1.0f);
+					ImGui::ColorEdit3("AO Color", glm::value_ptr(mAmbientOcclusionColor));
+				}
+
 				ImGui::End();
-				});
+			});
 		}
 	}
 
@@ -286,9 +305,18 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 
 		// Set the push constants:
 		auto pushConstantsForThisDrawCall = push_const_data{
+			glm::vec4{mLightDir, 0.0f},
 			mQuakeCam.global_transformation_matrix(),
-			glm::radians(mFieldOfViewForRayTracing) * 0.5f, 0.f, 0.f, 0.f,
-			glm::vec4{mLightDir, 0.0f}
+			glm::radians(mFieldOfViewForRayTracing) * 0.5f,
+			0.0f, // padding
+			mEnableShadows ? vk::Bool32{VK_TRUE} : vk::Bool32{VK_FALSE},
+			mShadowsFactor,
+			glm::vec4{ mShadowsColor, 1.0f },
+			mEnableAmbientOcclusion ? vk::Bool32{VK_TRUE} : vk::Bool32{VK_FALSE},
+			mAmbientOcclusionMinDist,
+			mAmbientOcclusionMaxDist,
+			mAmbientOcclusionFactor,
+			glm::vec4{ mAmbientOcclusionColor, 1.0f }
 		};
 		cmdbfr->handle().pushConstants(mPipeline->layout_handle(), vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR, 0, sizeof(pushConstantsForThisDrawCall), &pushConstantsForThisDrawCall);
 
@@ -398,8 +426,19 @@ private: // v== Member variables ==v
 
 	// A camera to navigate our scene, which provides us with the view matrix:
 	gvk::quake_camera mQuakeCam;
+
+	// ------------------- UI settings -----------------------
+
 	float mFieldOfViewForRayTracing = 45.0f;
-	
+	bool mEnableShadows = true;
+	float mShadowsFactor = 0.5f;
+	glm::vec3 mShadowsColor = glm::vec3{ 0.0f, 0.0f, 0.0f };
+	bool mEnableAmbientOcclusion = true;
+	float mAmbientOcclusionMinDist = 0.05f;
+	float mAmbientOcclusionMaxDist = 0.25f;
+	float mAmbientOcclusionFactor = 0.5f;
+	glm::vec3 mAmbientOcclusionColor = glm::vec3{ 0.0f, 0.0f, 0.0f };
+
 }; // End of fluid_nightmare_main
 
 int main() // <== Starting point ==
@@ -430,6 +469,7 @@ int main() // <== Starting point ==
 			gvk::required_device_extensions()
 				// We need several extensions for ray tracing:
 				.add_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)
+				.add_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME)
 				.add_extension(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME)
 				.add_extension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME)
 				.add_extension(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)
@@ -446,6 +486,9 @@ int main() // <== Starting point ==
 			[](vk::PhysicalDeviceAccelerationStructureFeaturesKHR& aAccelerationStructureFeatures) {
 				// ...and here:
 				aAccelerationStructureFeatures.setAccelerationStructure(VK_TRUE);
+			},
+			[](vk::PhysicalDeviceRayQueryFeaturesKHR& aRayQueryFeatures) {
+				aRayQueryFeatures.setRayQuery(VK_TRUE);
 			},
 			// Pass our main window to render into its frame buffers:
 			mainWnd,

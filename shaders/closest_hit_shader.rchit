@@ -1,6 +1,7 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_ray_query : require
 
 layout(set = 0, binding = 0) uniform sampler2D textures[];
 
@@ -62,7 +63,7 @@ struct MaterialGpuData
 layout(set = 0, binding = 1) buffer Material 
 {
 	MaterialGpuData materials[];
-} matSsbo;
+} materialsBuffer;
 
 layout(set = 0, binding = 2) uniform usamplerBuffer indexBuffers[];
 layout(set = 0, binding = 3) uniform samplerBuffer texCoordsBuffers[];
@@ -78,16 +79,24 @@ hitAttributeEXT vec3 hitAttribs;
 layout(location = 2) rayPayloadEXT float secondaryRayHitValue;
 
 layout(push_constant) uniform PushConstants {
-	mat4  mCameraTransform;
-    float mCameraHalfFovAngle;
-    float _padding1, _padding2, _padding3;
     vec4  mLightDir;
+    mat4  mCameraTransform;
+    float mCameraHalfFovAngle;
+	float _padding;
+    bool  mEnableShadows;
+	float mShadowsFactor;
+	vec4  mShadowsColor;
+    bool  mEnableAmbientOcclusion;
+	float mAmbientOcclusionMinDist;
+	float mAmbientOcclusionMaxDist;
+	float mAmbientOcclusionFactor;
+	vec4  mAmbientOcclusionColor;
 } pushConstants;
 
 vec4 sample_from_diffuse_texture(int matIndex, vec2 uv)
 {
-	int texIndex = matSsbo.materials[matIndex].mDiffuseTexIndex;
-	vec4 offsetTiling = matSsbo.materials[matIndex].mDiffuseTexOffsetTiling;
+	int texIndex = materialsBuffer.materials[matIndex].mDiffuseTexIndex;
+	vec4 offsetTiling = materialsBuffer.materials[matIndex].mDiffuseTexOffsetTiling;
 	vec2 texCoords = uv * offsetTiling.zw + offsetTiling.xy;
 	return textureLod(textures[texIndex], texCoords, 0.0);
 }
@@ -105,9 +114,6 @@ void main()
 	const ivec3 indices = ivec3(texelFetch(indexBuffers[customIndex], gl_PrimitiveID).rgb);
 
 	// Use barycentric coordinates to compute the interpolated uv coordinates:
-//	const vec2 uv     = bc.x * texelFetch(texCoordsBuffers[customIndex], indices.x).rg
-//	                  + bc.y * texelFetch(texCoordsBuffers[customIndex], indices.y).rg 
-//				      + bc.z * texelFetch(texCoordsBuffers[customIndex], indices.z).rg;
 	const vec2 uv0 = texelFetch(texCoordsBuffers[customIndex], indices.x).st;
 	const vec2 uv1 = texelFetch(texCoordsBuffers[customIndex], indices.y).st;
 	const vec2 uv2 = texelFetch(texCoordsBuffers[customIndex], indices.z).st;
@@ -115,11 +121,10 @@ void main()
 
 
 	// Use barycentric coordinates to compute the interpolated normals
-	const vec3 normal = normalize(
-	                        bary.x * texelFetch(normalsBuffers[customIndex], indices.x).rgb
-	                      + bary.y * texelFetch(normalsBuffers[customIndex], indices.y).rgb 
-	                      + bary.z * texelFetch(normalsBuffers[customIndex], indices.z).rgb
-					    );
+	const vec3 nrm0 = texelFetch(normalsBuffers[customIndex], indices.x).rgb;
+	const vec3 nrm1 = texelFetch(normalsBuffers[customIndex], indices.y).rgb; 
+	const vec3 nrm2 = texelFetch(normalsBuffers[customIndex], indices.z).rgb;
+	const vec3 normal = (bary.x * nrm0 + bary.y * nrm1 + bary.z * nrm2);
 
 	// Sample color from diffuse texture
 	vec3 diffuseTexColor = sample_from_diffuse_texture(customIndex, uv).rgb;
@@ -137,13 +142,52 @@ void main()
     float tmin = 0.001;
     float tmax = 100.0;
 
+	const vec3 hitPos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT ;
 
-//    traceRayEXT(topLevelAS, rayFlags, cullMask, 1 /* sbtRecordOffset */, 0 /* sbtRecordStride */, 1 /* missIndex */, origin, tmin, direction, tmax, 2 /*payload location*/);
+	if (pushConstants.mEnableShadows) {
+		// Produce very simple shadows using a ray query:
+		rayQueryEXT rayQuery;
+		vec3 rayOrigin = hitPos;
+		vec3 rayDirection = pushConstants.mLightDir.xyz;
+		float tMin = 0.01;
+		float tMax = 1000.0;
+		rayQueryInitializeEXT(rayQuery, topLevelAS, gl_RayFlagsNoneEXT, 0xFF, rayOrigin, tMin, rayDirection, tMax);
+		if (rayQueryProceedEXT(rayQuery)) { 
+			// If any geometry has been hit
+			hitValue = mix(hitValue, pushConstants.mShadowsColor.rgb, pushConstants.mShadowsFactor);
+		}
+	}
 
-//	 gl_InstanceCustomIndex = VkGeometryInstance::instanceId
-//    hitValue = (barycentrics * 0.5 + vec3(0.5, 0.5, 0.5))
-//		* uniformBuffers[nonuniformEXT(gl_InstanceCustomIndexEXT)].color.rgb
-//		* ( secondaryRayHitValue < tmax ? 0.25 : 1.0 );
-//	hitValue = barycentrics * 0.5 + vec3(0.5, 0.5, 0.5);
-//	hitValue = vec3(clamp(uv,0,1), 0) * (secondaryRayHitValue < tmax ? 0.25 : 1.0);
+	if (pushConstants.mEnableAmbientOcclusion) {
+		// Produce very simple (and expensive) ambient occlusion using multiple ray queries:
+		// Create a Ray Query and search for all the neighbors
+
+		vec3 sampleDirections[8] = {
+			vec3( 1,  1,  1),
+			vec3( 1,  1, -1),
+			vec3( 1, -1,  1),
+			vec3( 1, -1, -1),
+			vec3(-1,  1,  1),
+			vec3(-1,  1, -1),
+			vec3(-1, -1,  1),
+			vec3(-1, -1, -1),
+		};
+
+		float ao = 0.0;
+
+		for (int i = 0; i < 8; ++i) {
+			rayQueryEXT rayQuery;
+			vec3 rayOrigin = hitPos;
+			vec3 rayDirection = sampleDirections[i];
+			float tMin = pushConstants.mAmbientOcclusionMinDist;
+			float tMax = pushConstants.mAmbientOcclusionMaxDist;
+			rayQueryInitializeEXT(rayQuery, topLevelAS, gl_RayFlagsNoneEXT, 0xFF, rayOrigin, tMin, rayDirection, tMax);
+			if (rayQueryProceedEXT(rayQuery)) { 
+				// If any geometry has been hit
+				ao += 1.0 / 8.0;
+			}
+		}
+
+		hitValue = mix(hitValue, pushConstants.mAmbientOcclusionColor.rgb, ao * pushConstants.mAmbientOcclusionFactor);
+	}
 }

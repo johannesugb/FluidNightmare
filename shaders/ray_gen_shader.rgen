@@ -2,10 +2,18 @@
 #extension GL_EXT_ray_tracing : require
 
 layout(push_constant) uniform PushConstants {
-	mat4  mCameraTransform;
-    float mCameraHalfFovAngle;
-    float _padding1, _padding2, _padding3;
     vec4  mLightDir;
+    mat4  mCameraTransform;
+    float mCameraHalfFovAngle;
+	float _padding;
+    bool  mEnableShadows;
+	float mShadowsFactor;
+	vec4  mShadowsColor;
+    bool  mEnableAmbientOcclusion;
+	float mAmbientOcclusionMinDist;
+	float mAmbientOcclusionMaxDist;
+	float mAmbientOcclusionFactor;
+	vec4  mAmbientOcclusionColor;
 } pushConstants;
 
 layout(set = 2, binding = 0) uniform accelerationStructureEXT topLevelAS;
@@ -45,7 +53,7 @@ void main()
     uint rayFlags = gl_RayFlagsOpaqueEXT;
     uint cullMask = 0xff;
     float tmin = 0.001;
-    float tmax = 100.0;
+    float tmax = 1000.0;
     traceRayEXT(topLevelAS, rayFlags, cullMask, 0 /*sbtRecordOffset*/, 0 /*sbtRecordStride*/, 0 /*missIndex*/, rayOrigin, tmin, rayDirection, tmax, 0 /*payload*/);
 
     imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(hitValue, 0.0));
