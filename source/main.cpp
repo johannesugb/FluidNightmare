@@ -49,13 +49,14 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 			for (const auto& [materialConfig, meshIndices] : distinctMaterials) {
 				materialData.push_back(materialConfig);
 
+				auto selection = gvk::make_models_and_meshes_selection(model.mLoadedModel, meshIndices);
 				// Store all of this data in buffers and buffer views, s.t. we can access it later in ray tracing shaders
 				auto [posBfr, idxBfr] = gvk::create_vertex_and_index_buffers<avk::uniform_texel_buffer_meta>(
-					gvk::make_models_and_meshes_selection(model.mLoadedModel, meshIndices),  // Select several indices (those with the same material) from a model
-					vk::BufferUsageFlagBits::eShaderDeviceAddressKHR                         // Buffers need this additional flag to be made usable with ray tracing
+					selection,                                          // Select several indices (those with the same material) from a model
+					vk::BufferUsageFlagBits::eShaderDeviceAddressKHR    // Buffers need this additional flag to be made usable with ray tracing
 				);
-				auto nrmBfr = gvk::create_normals_buffer               <avk::uniform_texel_buffer_meta>(gvk::make_models_and_meshes_selection(model.mLoadedModel, meshIndices));
-				auto texBfr = gvk::create_2d_texture_coordinates_buffer<avk::uniform_texel_buffer_meta>(gvk::make_models_and_meshes_selection(model.mLoadedModel, meshIndices));
+				auto nrmBfr = gvk::create_normals_buffer               <avk::uniform_texel_buffer_meta>(selection);
+				auto texBfr = gvk::create_2d_texture_coordinates_buffer<avk::uniform_texel_buffer_meta>(selection);
 
 				// Create a bottom level acceleration structure instance with this geometry.
 				auto blas = gvk::context().create_bottom_level_acceleration_structure(
@@ -67,7 +68,8 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 				// Create a geometry instance entry per instance in the ORCA scene file:
 				for (const auto& inst : model.mInstances) {
 					auto bufferViewIndex = static_cast<uint32_t>(mTexCoordsBufferViews.size());
-					
+
+					// Create a concrete geometry instance:
 					mGeometryInstances.push_back(
 						gvk::context().create_geometry_instance(blas) // Refer to the concrete BLAS
 							// Set this instance's transformation matrix:
@@ -75,7 +77,20 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 							// Set this instance's custom index, which is especially important since we'll use it in shaders
 							// to refer to the right material and also vertex data (these two are aligned index-wise):
 							.set_custom_index(bufferViewIndex)
-					);					
+					);
+
+					// State that this geometry instance shall be included in TLAS generation by default:
+					mGeometryInstanceActive.push_back(true);
+
+					// Generate and store a description for what this geometry instance entry represents:
+					assert(!selection.empty());
+					std::string description = model.mName + " (" + inst.mName + "): "; // ...refers to one specific model, and...
+					for (const auto& tpl : selection) {
+						for (const auto meshIndex : std::get<1>(tpl)) {
+							description += std::get<0>(tpl)->name_of_mesh(meshIndex) + ", "; // ...to one or multiple submeshes.
+						}
+					}
+					mGeometryInstanceDescriptions.push_back(description.substr(0, description.size() - 2));
 				}
 				
 				mBlas.push_back(std::move(blas)); // Move this BLAS s.t. we don't have to enable_shared_ownership. We're done with it here.
@@ -114,8 +129,8 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 
 		// Build the top-level acceleration structure
 		mTlas = gvk::context().create_top_level_acceleration_structure(
-			mGeometryInstances.size(),   // Specify how many geometry instances there are expected to be
-			true                         // Allow updates since we want to have the opportunity to enable/disable some of them via the UI
+			static_cast<uint32_t>(mGeometryInstances.size()), // Specify how many geometry instances there are expected to be
+			true                                              // Allow updates since we want to have the opportunity to enable/disable some of them via the UI
 		);
 		mTlas->build(mGeometryInstances);
 		
@@ -187,10 +202,14 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 				ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
 				ImGui::TextColored(ImVec4(0.f, .6f, .8f, 1.f), "[F1]: Toggle input-mode");
 				ImGui::TextColored(ImVec4(0.f, .6f, .8f, 1.f), " (UI vs. scene navigation)");
+
+				// Let the user change the ambient color:
+				ImGui::DragFloat3("Ambient Light", glm::value_ptr(mAmbientLight), 0.001f, 0.0f, 1.0f);
+
+				// Let the user change the light's direction, which also influences shadows:
 				ImGui::DragFloat3("Light Direction", glm::value_ptr(mLightDir), 0.005f, -1.0f, 1.0f);
 				mLightDir = glm::normalize(mLightDir);
 
-				ImGui::Separator();
 				// Let the user change the field of view, and evaluate in the ray generation shader:
 				ImGui::DragFloat("Field of View", &mFieldOfViewForRayTracing, 1, 10.0f, 160.0f);
 
@@ -212,6 +231,27 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 					ImGui::ColorEdit3("AO Color", glm::value_ptr(mAmbientOcclusionColor));
 				}
 
+				ImGui::Separator();
+				if (ImGui::CollapsingHeader("Geometry Instances included in TLAS")) {
+					// Let the user enable/disable some geometry instances w.r.t. includion into the TLAS:
+					assert(mGeometryInstances.size() == mGeometryInstanceActive.size());
+					assert(mGeometryInstances.size() == mGeometryInstanceDescriptions.size());
+					for (size_t i = 0; i < mGeometryInstances.size(); ++i) {
+						bool tmp1 = mGeometryInstanceActive[i];
+						bool tmp0 = tmp1;
+						mTlasUpdateRequired = ImGui::Checkbox((mGeometryInstanceDescriptions[i] + "##geominst" + std::to_string(i)).c_str(), &tmp1) || mTlasUpdateRequired;
+						// Our geometry can not be empty => therefore, perform a check
+						if (tmp0 != tmp1) {
+							if (true == tmp1 || std::accumulate(std::begin(mGeometryInstanceActive), std::end(mGeometryInstanceActive), 0, [](auto cur, auto nxt) { return cur + (nxt ? 1 : 0); }) != 0) {
+								mGeometryInstanceActive[i] = tmp1;
+							}
+							else {
+								LOG_WARNING("At least one geometry entry must be selected for a TLAS update!");
+							}
+						}
+					}
+				}
+
 				ImGui::End();
 			});
 		}
@@ -219,47 +259,49 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 
 	void update() override
 	{
-		// Arrow Keys || Page Up/Down Keys => Move the TLAS
-		static int64_t updateUntilFrame = -1;
-		if (gvk::input().key_down(gvk::key_code::left) || gvk::input().key_down(gvk::key_code::right) || gvk::input().key_down(gvk::key_code::page_down) || gvk::input().key_down(gvk::key_code::page_up) || gvk::input().key_down(gvk::key_code::up) || gvk::input().key_down(gvk::key_code::down)) {
-			// Make sure to update all of the in-flight TLASs, otherwise we'll get some geometry jumping:
-			updateUntilFrame = gvk::context().main_window()->current_frame() + gvk::context().main_window()->number_of_frames_in_flight() - 1;
-		}
-		if (gvk::context().main_window()->current_frame() <= updateUntilFrame)
+		if (mTlasUpdateRequired)
 		{
-			//auto inFlightIndex = gvk::context().main_window()->in_flight_index_for_frame();
+			// Getometry selection has changed => rebuild the TLAS:
 
-			//auto x = (gvk::input().key_down(gvk::key_code::left) ? -gvk::time().delta_time() : 0.0f)
-			//	+ (gvk::input().key_down(gvk::key_code::right) ? gvk::time().delta_time() : 0.0f);
-			//auto y = (gvk::input().key_down(gvk::key_code::page_down) ? -gvk::time().delta_time() : 0.0f)
-			//	+ (gvk::input().key_down(gvk::key_code::page_up) ? gvk::time().delta_time() : 0.0f);
-			//auto z = (gvk::input().key_down(gvk::key_code::up) ? -gvk::time().delta_time() : 0.0f)
-			//	+ (gvk::input().key_down(gvk::key_code::down) ? gvk::time().delta_time() : 0.0f);
-			//auto speed = 1000.0f;
+			std::vector<avk::geometry_instance> activeGeometryInstances;
+			assert(mGeometryInstances.size() == mGeometryInstanceActive.size());
+			for (size_t i = 0; i < mGeometryInstances.size(); ++i) {
+				if (mGeometryInstanceActive[i]) {
+					activeGeometryInstances.push_back(mGeometryInstances[i]);
+				}
+			}
 
-			//// Change the position of one of the current TLASs BLAS, and update-build the TLAS.
-			//// The changes do not affect the BLAS, only the instance-data that the TLAS stores to each one of the BLAS.
-			////
-			//// 1. Change every other instance:
-			//bool evenOdd = true;
-			//for (auto& geomInst : mGeometryInstances) {
-			//	evenOdd = !evenOdd;
-			//	if (evenOdd) { continue; }
-			//	geomInst.set_transform_column_major(gvk::to_array(glm::translate(gvk::to_mat(geomInst.mTransform), glm::vec3{ x, y, z } *speed)));
-			//}
-			////
-			//// 2. Update the TLAS for the current inFlightIndex, copying the changed BLAS-data into an internal buffer:
-			//mTLAS[inFlightIndex]->update(mGeometryInstances, {}, avk::sync::with_barriers(
-			//	gvk::context().main_window()->command_buffer_lifetime_handler(),
-			//	{}, // Nothing to wait for
-			//	[](avk::command_buffer_t& commandBuffer, avk::pipeline_stage srcStage, std::optional<avk::write_memory_access> srcAccess) {
-			//		// We want this update to be as efficient/as tight as possible
-			//		commandBuffer.establish_global_memory_barrier_rw(
-			//			srcStage, avk::pipeline_stage::ray_tracing_shaders, // => ray tracing shaders must wait on the building of the acceleration structure
-			//			srcAccess, avk::memory_access::acceleration_structure_read_access // TLAS-update's memory must be made visible to ray tracing shader's caches (so they can read from)
-			//		);
-			//	}
-			//));
+			if (!activeGeometryInstances.empty()) {
+				auto& commandPool = gvk::context().get_command_pool_for_single_use_command_buffers(*mQueue);
+				auto cmdbfr = commandPool->alloc_command_buffer(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+				cmdbfr->begin_recording();
+
+				// We're using only one TLAS for all frames in flight. Therefore, we need to set up a barrier
+				// affecting the whole queue which waits until all previous ray tracing work has completed:
+				cmdbfr->establish_execution_barrier(
+					avk::pipeline_stage::ray_tracing_shaders, /* -> */ avk::pipeline_stage::acceleration_structure_build
+				);
+
+				// ...then we can safely update the TLAS with new data:
+				mTlas->build(                // We're not updating existing geometry, but we are changing the geometry => therefore, we need to perform a full rebuild.
+					activeGeometryInstances, // Build only with the active geometry instances
+					{},                      // Let top_level_acceleration_structure_t::build handle the staging buffer internally 
+					avk::sync::with_barriers_into_existing_command_buffer(*cmdbfr, {}, {})
+				);
+
+				// ...and we need to ensure that the TLAS update-build has completed (also in terms of memory
+				// access--not only execution) before we may continue ray tracing with that TLAS:
+				cmdbfr->establish_global_memory_barrier(
+					avk::pipeline_stage::acceleration_structure_build,       /* -> */ avk::pipeline_stage::ray_tracing_shaders,
+					avk::memory_access::acceleration_structure_write_access, /* -> */ avk::memory_access::acceleration_structure_read_access
+				);
+
+				cmdbfr->end_recording();
+				mQueue->submit(avk::referenced(cmdbfr));
+				gvk::context().main_window()->handle_lifetime(avk::owned(cmdbfr));
+			}
+
+			mTlasUpdateRequired = false;
 		}
 
 		if (gvk::input().key_pressed(gvk::key_code::space)) {
@@ -305,6 +347,7 @@ public: // v== xk::invokee overrides which will be invoked by the framework ==v
 
 		// Set the push constants:
 		auto pushConstantsForThisDrawCall = push_const_data{
+			glm::vec4{mAmbientLight, 0.0f},
 			glm::vec4{mLightDir, 0.0f},
 			mQuakeCam.global_transformation_matrix(),
 			glm::radians(mFieldOfViewForRayTracing) * 0.5f,
@@ -370,6 +413,9 @@ private: // v== Member variables ==v
 
 	// ------------- Scene and model properties ---------------
 	
+	// Ambient light of our scene:
+	glm::vec3 mAmbientLight = { 0.5f, 0.5f, 0.5f };
+
 	// The direction of our single light source, which is a directional light:
 	glm::vec3 mLightDir = { 0.0f, -1.0f, 0.0f };
 
@@ -406,6 +452,9 @@ private: // v== Member variables ==v
 	//     - mTexCoordBufferViews
 	//     - mNormalsBufferViews
 	std::vector<avk::geometry_instance> mGeometryInstances;
+
+	// A description per geometry instance to roughly describe what they refer to:
+	std::vector<std::string> mGeometryInstanceDescriptions;
 	
 	// We are using one single top-level acceleration structure (TLAS) to keep things simple:
 	//    (We're not duplicating the TLAS per frame in flight. Instead, we
@@ -438,6 +487,12 @@ private: // v== Member variables ==v
 	float mAmbientOcclusionMaxDist = 0.25f;
 	float mAmbientOcclusionFactor = 0.5f;
 	glm::vec3 mAmbientOcclusionColor = glm::vec3{ 0.0f, 0.0f, 0.0f };
+
+	// One boolean per geometry instance to tell if it shall be included in the
+	// generation of the TLAS or not:
+	std::vector<bool> mGeometryInstanceActive;
+
+	bool mTlasUpdateRequired = false;
 
 }; // End of fluid_nightmare_main
 

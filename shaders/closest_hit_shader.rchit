@@ -79,6 +79,7 @@ hitAttributeEXT vec3 hitAttribs;
 layout(location = 2) rayPayloadEXT float secondaryRayHitValue;
 
 layout(push_constant) uniform PushConstants {
+    vec4  mAmbientLight;
     vec4  mLightDir;
     mat4  mCameraTransform;
     float mCameraHalfFovAngle;
@@ -133,7 +134,7 @@ void main()
 	float nDotL = dot(normal, normalize(pushConstants.mLightDir.xyz));
 
 	// Set diffusely illuminated result as the hitValue:
-	hitValue = diffuseTexColor * max(0.0, nDotL);
+	hitValue = diffuseTexColor * (max(0.0, nDotL) + pushConstants.mAmbientLight.rgb);
 
     vec3 origin = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
     vec3 direction = normalize(pushConstants.mLightDir.xyz);

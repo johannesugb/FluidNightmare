@@ -4,6 +4,7 @@
 
 // Data to be pushed to the GPU along with a specific draw call:
 struct push_const_data {
+	glm::vec4  mAmbientLight;
 	glm::vec4  mLightDir;
 	glm::mat4  mCameraTransform;
 	float mCameraHalfFovAngle;
