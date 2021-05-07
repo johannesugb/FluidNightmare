@@ -19,33 +19,48 @@
     <None Include="gears_vk\assets\sponza_and_terrain.fscene">
       <Filter>assets</Filter>
     </None>
-    <None Include="shaders\closest_hit_shader.rchit">
+    <None Include="shaders\first_hit_closest_hit_shader.rchit">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shaders\first_hit_miss_shader.rmiss">
       <Filter>shaders</Filter>
     </None>
     <None Include="shaders\ray_gen_shader.rgen">
       <Filter>shaders</Filter>
     </None>
-    <None Include="shaders\miss_shader.rmiss">
+    <None Include="shaders\shadow_closest_hit_shader.rchit">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shaders\ao_closest_hit_shader.rchit">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shaders\shadow_ao_miss_shader.rmiss">
       <Filter>shaders</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="source\main.cpp">
-      <Filter>source</Filter>
-    </ClCompile>
     <ClCompile Include="source\precompiled_headers\cg_stdafx.cpp">
       <Filter>source\precompiled_headers</Filter>
     </ClCompile>
+    <ClCompile Include="source\main.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="source\cpu_to_gpu_data_types.hpp">
-      <Filter>source</Filter>
-    </ClInclude>
     <ClInclude Include="source\precompiled_headers\cg_stdafx.hpp">
       <Filter>source\precompiled_headers</Filter>
     </ClInclude>
     <ClInclude Include="source\precompiled_headers\cg_targetver.hpp">
       <Filter>source\precompiled_headers</Filter>
+    </ClInclude>
+    <ClInclude Include="source\cpu_to_gpu_data_types.hpp">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\triangle_mesh_geometry_manager.hpp">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\preprocessor_defines.hpp">
+      <Filter>source</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
