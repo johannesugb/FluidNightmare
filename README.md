@@ -6,6 +6,12 @@ Rendering of particle-base fluids with real-time ray tracing.
 
 TBD.
 
+## Environment
+
+- Windows 10
+- Visual Studio 2019 (make sure it is updated s.t. it includes the latest C++ compiler)
+- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows), but beware: _Gears-Vk_ (the used framework) has currently some issues with the latest SDK. Therefore, SDK version **1.2.162.1** is recommended.
+
 ## Setup Instructions and Submodules
 
 1. Clone the repository with all submodules recursively:       
