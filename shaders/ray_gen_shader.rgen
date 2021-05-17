@@ -55,7 +55,7 @@ void main()
     uint cullMask = 0xff;
     float tmin = 0.001;
     float tmax = 1000.0;
-    traceRayEXT(topLevelAS, rayFlags, cullMask, 0 /*sbtRecordOffset*/, 0 /*sbtRecordStride*/, 0 /*missIndex*/, rayOrigin, tmin, rayDirection, tmax, 0 /*payload*/);
+    traceRayEXT(topLevelAS, rayFlags, cullMask, 0 /*sbtRecordOffset*/, 1 /*sbtRecordStride*/, 0 /*missIndex*/, rayOrigin, tmin, rayDirection, tmax, 0 /*payload*/);
 
     imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(hitValue, 0.0));
 

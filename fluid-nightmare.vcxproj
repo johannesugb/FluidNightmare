@@ -20,8 +20,13 @@
     <None Include="shaders\first_hit_closest_hit_shader.rchit" />
     <None Include="shaders\first_hit_miss_shader.rmiss" />
     <None Include="shaders\ray_gen_shader.rgen" />
+    <None Include="shaders\rt_aabb.rchit" />
+    <None Include="shaders\rt_aabb.rint" />
     <None Include="shaders\shadow_closest_hit_shader.rchit" />
-    <None Include="shaders\shadow_ao_miss_shader.rmiss" />
+    <None Include="shaders\empty_miss_shader.rmiss" />
+    <None Include="shaders\spawn_particles.rgen" />
+    <None Include="shaders\spawn_particles_procedural.rchit" />
+    <None Include="shaders\spawn_particles_triangles.rchit" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="gears_vk\visual_studio\gears_vk\gears-vk.vcxproj">
@@ -38,9 +43,11 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\cpu_to_gpu_data_types.hpp" />
+    <ClInclude Include="source\fluid_nightmare_main.hpp" />
     <ClInclude Include="source\precompiled_headers\cg_stdafx.hpp" />
     <ClInclude Include="source\precompiled_headers\cg_targetver.hpp" />
     <ClInclude Include="source\preprocessor_defines.hpp" />
+    <ClInclude Include="source\procedural_geometry_manager.hpp" />
     <ClInclude Include="source\triangle_mesh_geometry_manager.hpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

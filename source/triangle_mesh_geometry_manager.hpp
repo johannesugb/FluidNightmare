@@ -59,11 +59,13 @@ public: // v== gvk::invokee overrides which will be invoked by the framework ==v
 					// Create a concrete geometry instance:
 					mAllGeometryInstances.push_back(
 						gvk::context().create_geometry_instance(blas) // Refer to the concrete BLAS
+							// Handle triangle meshes with an instance offset of 0:
+							.set_instance_offset(0)
 							// Set this instance's transformation matrix:
-						.set_transform_column_major(gvk::to_array(gvk::matrix_from_transforms(inst.mTranslation, glm::quat(inst.mRotation), inst.mScaling)))
-						// Set this instance's custom index, which is especially important since we'll use it in shaders
-						// to refer to the right material and also vertex data (these two are aligned index-wise):
-						.set_custom_index(bufferViewIndex)
+							.set_transform_column_major(gvk::to_array(gvk::matrix_from_transforms(inst.mTranslation, glm::quat(inst.mRotation), inst.mScaling)))
+							// Set this instance's custom index, which is especially important since we'll use it in shaders
+							// to refer to the right material and also vertex data (these two are aligned index-wise):
+							.set_custom_index(bufferViewIndex)
 					);
 
 					// State that this geometry instance shall be included in TLAS generation by default:
@@ -94,9 +96,7 @@ public: // v== gvk::invokee overrides which will be invoked by the framework ==v
 			std::get<2>(nameAndRangeInfo) = static_cast<int>(mAllGeometryInstances.size());
 		}
 
-		// Set add all the geometry instances to mActiveGeometryInstances and set the mTlasUpdateRequired flag
-		// in order to trigger initial TLAS build in our main invokee:
-		mActiveGeometryInstances.insert(std::begin(mActiveGeometryInstances), std::begin(mAllGeometryInstances), std::end(mAllGeometryInstances));
+		// Set the flag in order to trigger initial TLAS build in our main invokee:
 		mTlasUpdateRequired = true;
 
 		// Convert the materials that were gathered above into a GPU-compatible format and generate and upload images to the GPU:
@@ -127,6 +127,10 @@ public: // v== gvk::invokee overrides which will be invoked by the framework ==v
 				ImGui::Begin("Triangle Mesh Geometry Instances");
 				ImGui::Text("Specify which geometry instances to included in TLAS:");
 
+				ImGui::TextColored(ImVec4(0.f, .6f, .8f, 1.f), "Supported modifier keys:");
+				ImGui::TextColored(ImVec4(0.f, .6f, .8f, 1.f), " [Shift] + Click ... Enable only the selected item");
+				ImGui::TextColored(ImVec4(0.f, .6f, .8f, 1.f), " [Ctrl]  + Click ... Enable all items except the selected one");
+
 				// Let the user enable/disable some geometry instances w.r.t. includion into the TLAS:
 				assert(mAllGeometryInstances.size() == mGeometryInstanceActive.size());
 				assert(mAllGeometryInstances.size() == mGeometryInstanceDescriptions.size());
@@ -140,8 +144,22 @@ public: // v== gvk::invokee overrides which will be invoked by the framework ==v
 						ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
 					}
 
-					mTlasUpdateRequired = ImGui::Checkbox((mGeometryInstanceDescriptions[i] + "##geominst" + std::to_string(i)).c_str(), &tmp) || mTlasUpdateRequired;
-					mGeometryInstanceActive[i] = tmp;
+					auto clicked = ImGui::Checkbox((mGeometryInstanceDescriptions[i] + "##geominst" + std::to_string(i)).c_str(), &tmp);
+					mTlasUpdateRequired = mTlasUpdateRequired || clicked;
+
+					if (clicked && (gvk::input().key_down(gvk::key_code::left_shift) || gvk::input().key_down(gvk::key_code::right_shift))) {
+						for (size_t j = 0; j < mGeometryInstanceActive.size(); ++j) {
+							mGeometryInstanceActive[j] = j == i;
+						}
+					}
+					else if (clicked && (gvk::input().key_down(gvk::key_code::left_control) || gvk::input().key_down(gvk::key_code::right_control))) {
+						for (size_t j = 0; j < mGeometryInstanceActive.size(); ++j) {
+							mGeometryInstanceActive[j] = j != i;
+						}
+					}
+					else { // No modifier keys pressed => no special treatment:
+						mGeometryInstanceActive[i] = tmp;
+					}
 
 					if (disable) {
 						ImGui::PopItemFlag();
@@ -158,31 +176,27 @@ public: // v== gvk::invokee overrides which will be invoked by the framework ==v
 	{
 		return mTlasUpdateRequired;
 	}
+
+	void reset_update_required_flag()
+	{
+		mTlasUpdateRequired = false;
+	}
 	
 	// Return the active geometry instances to the caller, who will use it for a TLAS build:
 	[[nodiscard]] std::vector<avk::geometry_instance> get_active_geometry_instances_for_tlas_build()
 	{
-		std::vector<avk::geometry_instance> toBeReturned = std::move(mActiveGeometryInstances);
-		mActiveGeometryInstances.clear();
-		mTlasUpdateRequired = false;
-		return toBeReturned;
+		std::vector<avk::geometry_instance> activeGeometryInstances;
+		for (size_t i = 0; i < mAllGeometryInstances.size(); ++i) {
+			if (mGeometryInstanceActive[i]) {
+				activeGeometryInstances.push_back(mAllGeometryInstances[i]);
+			}
+		}
+		return activeGeometryInstances;
 	}
 
 	// Invoked by the framework every frame:
 	void update() override
 	{
-		if (mTlasUpdateRequired)
-		{
-			// Getometry selection has changed => gather updated geometry information for TLAS build:
-			assert(mAllGeometryInstances.size() == mGeometryInstanceActive.size());
-			
-			mActiveGeometryInstances.clear();
-			for (size_t i = 0; i < mAllGeometryInstances.size(); ++i) {
-				if (mGeometryInstanceActive[i]) {
-					mActiveGeometryInstances.push_back(mAllGeometryInstances[i]);
-				}
-			}
-		}
 	}
 
 	// Some getters that will be used by the main invokee:
@@ -243,9 +257,5 @@ private: // v== Member variables ==v
 
 	// True when an TLAS update is immanent:
 	bool mTlasUpdateRequired = true;
-
-	// Contains only the geometry instances which are acitive (and should participate
-	// in the TLAS build):
-	std::vector<avk::geometry_instance> mActiveGeometryInstances;
 
 }; // End of triangle_mesh_geometry_manager

@@ -165,7 +165,7 @@ void main()
 		// We need to get the indices right into these SBT entries by specifying the correct offsets.
 		// Not only these offsets take part in the final SBT-index computation, but also the offsets that
 		// were specified in the trace_rays(...) call on the CPU-side (but set them to 0 each in this case).
-		traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 1 /* sbtRecordOffset */, 0 /* sbtRecordStride */, 1 /* missIndex */, rayOrigin, tMin, rayDirection, tMax, 1 /*payload location*/);
+		traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 2 /* sbtRecordOffset */, 0 /* sbtRecordStride */, 1 /* missIndex */, rayOrigin, tMin, rayDirection, tMax, 1 /*payload location*/);
 
 		hitValue = mix(hitValue, shadowPayload, pushConstants.mShadowsFactor);
 	}
@@ -201,7 +201,7 @@ void main()
 			// We need to get the indices right into these SBT entries by specifying the correct offsets.
 			// Not only these offsets take part in the final SBT-index computation, but also the offsets that
 			// were specified in the trace_rays(...) call on the CPU-side (but set them to 0 each in this case).
-			traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 2 /* sbtRecordOffset */, 0 /* sbtRecordStride */, 1 /* missIndex */, rayOrigin, tMin, rayDirection, tMax, 2 /*payload location*/);
+			traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 3 /* sbtRecordOffset */, 0 /* sbtRecordStride */, 1 /* missIndex */, rayOrigin, tMin, rayDirection, tMax, 2 /*payload location*/);
 			ao += aoPayload;
 		}
 

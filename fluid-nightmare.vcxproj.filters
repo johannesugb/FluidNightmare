@@ -14,27 +14,48 @@
     <Filter Include="source\precompiled_headers">
       <UniqueIdentifier>{66b81881-a421-46fa-80d5-9a887ec696a7}</UniqueIdentifier>
     </Filter>
+    <Filter Include="shaders\particle_spawner">
+      <UniqueIdentifier>{cbc9f5af-a0ea-4675-912e-4f3b9ab546b2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="shaders\scene_rendering">
+      <UniqueIdentifier>{ed982a8c-6f07-4d6b-a1f9-c92f9748d0ad}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <None Include="gears_vk\assets\sponza_and_terrain.fscene">
       <Filter>assets</Filter>
     </None>
+    <None Include="shaders\ao_closest_hit_shader.rchit">
+      <Filter>shaders\scene_rendering</Filter>
+    </None>
     <None Include="shaders\first_hit_closest_hit_shader.rchit">
-      <Filter>shaders</Filter>
+      <Filter>shaders\scene_rendering</Filter>
     </None>
     <None Include="shaders\first_hit_miss_shader.rmiss">
-      <Filter>shaders</Filter>
+      <Filter>shaders\scene_rendering</Filter>
     </None>
     <None Include="shaders\ray_gen_shader.rgen">
-      <Filter>shaders</Filter>
+      <Filter>shaders\scene_rendering</Filter>
+    </None>
+    <None Include="shaders\rt_aabb.rchit">
+      <Filter>shaders\scene_rendering</Filter>
     </None>
     <None Include="shaders\shadow_closest_hit_shader.rchit">
+      <Filter>shaders\scene_rendering</Filter>
+    </None>
+    <None Include="shaders\spawn_particles.rgen">
+      <Filter>shaders\particle_spawner</Filter>
+    </None>
+    <None Include="shaders\spawn_particles_procedural.rchit">
+      <Filter>shaders\particle_spawner</Filter>
+    </None>
+    <None Include="shaders\spawn_particles_triangles.rchit">
+      <Filter>shaders\particle_spawner</Filter>
+    </None>
+    <None Include="shaders\rt_aabb.rint">
       <Filter>shaders</Filter>
     </None>
-    <None Include="shaders\ao_closest_hit_shader.rchit">
-      <Filter>shaders</Filter>
-    </None>
-    <None Include="shaders\shadow_ao_miss_shader.rmiss">
+    <None Include="shaders\empty_miss_shader.rmiss">
       <Filter>shaders</Filter>
     </None>
   </ItemGroup>
@@ -60,6 +81,12 @@
       <Filter>source</Filter>
     </ClInclude>
     <ClInclude Include="source\preprocessor_defines.hpp">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\procedural_geometry_manager.hpp">
+      <Filter>source</Filter>
+    </ClInclude>
+    <ClInclude Include="source\fluid_nightmare_main.hpp">
       <Filter>source</Filter>
     </ClInclude>
   </ItemGroup>
