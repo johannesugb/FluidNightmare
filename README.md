@@ -1,6 +1,7 @@
 # Fluid Nightmare
 
-Rendering of particle-base fluids with real-time ray tracing.
+Rendering of particle-based fluids with real-time ray tracing.      
+This project is implemented using the [Gears-Vk](https://github.com/cg-tuwien/Gears-Vk) framework.
 
 ## Project Description
 
