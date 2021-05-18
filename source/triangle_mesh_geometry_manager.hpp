@@ -125,6 +125,9 @@ public: // v== gvk::invokee overrides which will be invoked by the framework ==v
 			imguiManager->add_callback([this]() {
 
 				ImGui::Begin("Triangle Mesh Geometry Instances");
+				ImGui::SetWindowPos(ImVec2(3.0f, 474.0f), ImGuiCond_FirstUseEver);
+				ImGui::SetWindowSize(ImVec2(410.0f, 606.0f), ImGuiCond_FirstUseEver);
+				
 				ImGui::Text("Specify which geometry instances to included in TLAS:");
 
 				ImGui::TextColored(ImVec4(0.f, .6f, .8f, 1.f), "Supported modifier keys:");

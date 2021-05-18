@@ -62,14 +62,14 @@ public: // v== gvk::invokee overrides which will be invoked by the framework ==v
 		if (nullptr != imguiManager) {
 			imguiManager->add_callback([this]() {
 				ImGui::Begin("Procedural Geometry");
-				ImGui::SetWindowPos(ImVec2(10.0f, 430.0f), ImGuiCond_FirstUseEver);
-				ImGui::SetWindowSize(ImVec2(400.0f, 600.0f), ImGuiCond_FirstUseEver);
+				ImGui::SetWindowPos(ImVec2(422, 2.0f), ImGuiCond_FirstUseEver);
+				ImGui::SetWindowSize(ImVec2(402.0f, 224.0f), ImGuiCond_FirstUseEver);
 
 				ImGui::Separator();
 				ImGui::Text("Spawn Settings:");
 				ImGui::DragFloat3("Spawn Origin", glm::value_ptr(mSpawnOrigin), 0.1f);
 				ImGui::DragFloat3("Spawn Direction", glm::value_ptr(mSpawnDirection), 0.1f);
-				ImGui::DragFloat("Spawn Cone Angle (Degrees)", &mSpawnAngle, 0.1f);
+				ImGui::SliderFloat("Spawn Cone Angle (Degrees)", &mSpawnAngle, 10.0f, 80.0f);
 				ImGui::Checkbox("Add Random Offset", &mRandomlyOffsetDirecion);
 				ImGui::SliderFloat("Radius of newly spawned particle", &mRadiusOfNewWaterParticles, 0.0001f, 1.0f);
 
@@ -248,7 +248,7 @@ private: // v== Member variables ==v
 	// ------------------- UI settings -----------------------
 
 	// The origin where from spawning rays are sent out (in world space):
-	glm::vec3 mSpawnOrigin = glm::vec3(0.0f, 10.0f, 0.0f);
+	glm::vec3 mSpawnOrigin = glm::vec3(0.0f, 20.0f, 0.0f);
 
 	// The orientation of the spawning frustum (in world space):
 	glm::vec3 mSpawnDirection = glm::vec3(0.0f, -1.0f, 0.0f);
@@ -261,7 +261,7 @@ private: // v== Member variables ==v
 	bool mRandomlyOffsetDirecion = true;
 	
 	// The water particle's (uniform) scale:
-	float mRadiusOfNewWaterParticles = 0.5f;
+	float mRadiusOfNewWaterParticles = 0.35f;
 
 	// True if water particles are currently being spawned:
 	bool mCurrentlySpawningWaterParticles = false;

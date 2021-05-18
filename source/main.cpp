@@ -107,8 +107,8 @@ void fluid_nightmare_main::initialize()
 	if (nullptr != imguiManager) {
 		imguiManager->add_callback([this]() {
 			ImGui::Begin("Info & Settings");
-			ImGui::SetWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
-			ImGui::SetWindowSize(ImVec2(400.0f, 410.0f), ImGuiCond_FirstUseEver);
+			ImGui::SetWindowPos(ImVec2(3.0f, 3.0f), ImGuiCond_FirstUseEver);
+			ImGui::SetWindowSize(ImVec2(410.0f, 468.0f), ImGuiCond_FirstUseEver);
 
 			ImGui::Text("%.3f ms/frame", 1000.0f / ImGui::GetIO().Framerate);
 			ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
