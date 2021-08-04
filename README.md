@@ -15,6 +15,12 @@ TBD.
 
 _Gears-Vk_ (the used framework) is compatible with the latest version of the Vulkan SDK, which is currently **1.2.182.0**, and should run without validation errors (watch out for red error messages displayed in Debug builds).
 
+Make sure to read about the two frameworks
+- [`Auto-Vk/README.md`](https://github.com/cg-tuwien/Auto-Vk/blob/master/README.md)
+- [`Gears-Vk/README.md`](https://github.com/cg-tuwien/Gears-Vk/blob/master/README.md)
+- [_Gears-Vk_'s Visual Studio Project Management](https://github.com/cg-tuwien/Gears-Vk/tree/master/visual_studio#project-management-with-visual-studio)
+- [_Gears-Vk_'s Post Build Helper](https://github.com/cg-tuwien/Gears-Vk/tree/master/visual_studio#post-build-helper), Hint: Also have a look at its [recommended settings](https://github.com/cg-tuwien/Gears-Vk/tree/master/visual_studio#post-build-helper-settings)
+
 ## Setup Instructions and Submodules
 
 1. Clone the repository with all submodules recursively:       
